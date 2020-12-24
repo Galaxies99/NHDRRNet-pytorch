@@ -1,3 +1,11 @@
+# dataset
+/data
+/patches
+/samples
+
+# model storage
+/checkpoint
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
