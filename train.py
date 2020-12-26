@@ -1,21 +1,21 @@
 import os
 import torch
-from tqdm import tqdm
+
 from torch import optim
 from torch.utils.data import DataLoader
 from utils.solvers import PolyLR
 from utils.loss import HDRLoss
 from utils.HDRutils import tonemap
-from utils.dataset import dump_sample
+from utils.dataprocessor import dump_sample
 from dataset.HDR import KalantariDataset, KalantariTestDataset
 from models.DeepHDR import DeepHDR
-from models.NHDRRNet import NHDRRNet
 from utils.configs import Configs
-from tqdm import tqdm
 
 
 # Get configurations
 configs = Configs()
+# configs = Configs(data_path='/Users/galaxies/Documents/Benchmark/kalantari_dataset')
+
 
 # Load Data & build dataset
 train_dataset = KalantariDataset(configs=configs)
@@ -26,16 +26,25 @@ test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
 
 
 # Build DeepHDR model from configs
-# model = DeepHDR(configs)
-model = NHDRRNet()
-device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
-model.to(device)
+model = DeepHDR(configs)
+if configs.multigpu is False:
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+else:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device == torch.device('cpu'):
+        raise EnvironmentError('No GPUs, cannot initialize multigpu training.')
+    model.to(device)
+    model = torch.nn.DataParallel(model)
 
 # Define optimizer
-optimizer = optim.Adam(model.parameters(), betas=(configs.beta, 0.999), lr=configs.learning_rate)
+optimizer = optim.Adam(model.parameters(), betas=(configs.beta1, configs.beta2), lr=configs.learning_rate)
 
 # Define Criterion
 criterion = HDRLoss()
+
+# Define Scheduler
+lr_scheduler = PolyLR(optimizer, max_iter=configs.epoch, power=0.9)
 
 # Read checkpoints
 start_epoch = 0
@@ -45,11 +54,9 @@ if os.path.isfile(checkpoint_file):
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint['epoch']
+    lr_scheduler.load_state_dict(checkpoint['scheduler'])
     print("Load checkpoint %s (epoch %d)", checkpoint_file, start_epoch)
-cur_epoch = start_epoch
-
-# Learning rate scheduler
-lr_scheduler = PolyLR(optimizer, max_iter=configs.epoch, power=0.9, last_step=start_epoch-1)
+    
 
 
 def train_one_epoch():
@@ -67,10 +74,8 @@ def train_one_epoch():
         optimizer.step()
         optimizer.zero_grad()
 
-        # train_loader.set_description('loss: {loss:.8f}'.format(loss=loss))
-
         print('--------------- Train Batch %d ---------------' % (idx + 1))
-        print('loss: %.12f' % loss.cpu().detach().numpy())
+        print('loss: %.12f' % loss.item())
 
 
 def eval_one_epoch():
@@ -86,15 +91,13 @@ def eval_one_epoch():
         # Forward
         with torch.no_grad():
             res = model(in_LDRs, in_HDRs)
-            # debug
-            # res = model(in_LDRs, in_HDRs, True)
         # Compute loss
         with torch.no_grad():
             loss = criterion(tonemap(res), tonemap(ref_HDRs))
         dump_sample(sample_path, res.cpu().detach().numpy())
         print('--------------- Eval Batch %d ---------------' % (idx + 1))
-        print('loss: %.12f' % loss.cpu().detach().numpy())
-        mean_loss += loss.cpu().detach().numpy()
+        print('loss: %.12f' % loss.item())
+        mean_loss += loss.item()
         count += 1
 
     mean_loss = mean_loss / count
@@ -107,14 +110,21 @@ def train(start_epoch):
         cur_epoch = epoch
         print('**************** Epoch %d ****************' % (epoch + 1))
         print('learning rate: %f' % (lr_scheduler.get_last_lr()[0]))
-        # train_one_epoch()
+        train_one_epoch()
         loss = eval_one_epoch()
         lr_scheduler.step()
-        save_dict = {'epoch': epoch + 1,
-                     'optimizer_state_dict': optimizer.state_dict(),
-                     'loss': loss,
-                     'model_state_dict': model.state_dict()
-                     }
+        if configs.multigpu is False:
+            save_dict = {'epoch': epoch + 1, 'loss': loss,
+                         'optimizer_state_dict': optimizer.state_dict(),
+                         'model_state_dict': model.state_dict(),
+                         'scheduler': lr_scheduler.state_dict()
+                         }
+        else:
+            save_dict = {'epoch': epoch + 1, 'loss': loss,
+                         'optimizer_state_dict': optimizer.state_dict(),
+                         'model_state_dict': model.module.state_dict(),
+                         'scheduler': lr_scheduler.state_dict()
+                         }
         torch.save(save_dict, os.path.join(configs.checkpoint_dir, 'checkpoint.tar'))
         torch.save(save_dict, os.path.join(configs.checkpoint_dir, 'checkpoint' + str(epoch) + '.tar'))
         print('mean eval loss: %.12f' % loss)

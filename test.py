@@ -4,7 +4,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 from utils.loss import HDRLoss
 from utils.HDRutils import tonemap
-from utils.dataset import dump_sample
+from utils.dataprocessor import dump_sample
 from dataset.HDR import KalantariTestDataset
 from models.DeepHDR import DeepHDR
 from utils.configs import Configs
@@ -12,6 +12,8 @@ from utils.configs import Configs
 
 # Get configurations
 configs = Configs()
+# configs = Configs(data_path='/Users/galaxies/Documents/Benchmark/kalantari_dataset')
+
 
 # Load dataset
 test_dataset = KalantariTestDataset(configs=configs)
@@ -19,11 +21,18 @@ test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
 
 # Build DeepHDR model from configs
 model = DeepHDR(configs)
-device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
-model.to(device)
+if configs.multigpu is False:
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+else:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device == torch.device('cpu'):
+        raise EnvironmentError('No GPUs, cannot initialize multigpu training.')
+    model.to(device)
+    model = torch.nn.DataParallel(model)
 
 # Define optimizer
-optimizer = optim.Adam(model.parameters(), betas=(configs.beta, 0.999), lr=configs.learning_rate)
+optimizer = optim.Adam(model.parameters(), betas=(configs.beta1, configs.beta2), lr=configs.learning_rate)
 
 # Define Criterion
 criterion = HDRLoss()
@@ -34,7 +43,8 @@ if os.path.isfile(checkpoint_file):
     checkpoint = torch.load(checkpoint_file)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    print("Load checkpoint %s" % checkpoint_file)
+    start_epoch = checkpoint['epoch']
+    print("Load checkpoint %s (epoch %d)", checkpoint_file, start_epoch)
 else:
     raise ModuleNotFoundError('No checkpoint files.')
 
@@ -60,8 +70,8 @@ def test_one_epoch():
         dump_sample(sample_path, res.cpu().detach().numpy())
 
         print('--------------- Test Batch %d ---------------' % (idx + 1))
-        print('loss: %.12f' % loss.cpu().detach().numpy())
-        mean_loss += loss.cpu().detach().numpy()
+        print('loss: %.12f' % loss.item())
+        mean_loss += loss.item()
         count += 1
 
     mean_loss = mean_loss / count
@@ -70,7 +80,7 @@ def test_one_epoch():
 
 def test():
     loss = test_one_epoch()
-    print('mean eval loss: %.12f' % loss)
+    print('mean test loss: %.12f' % loss)
 
 
 if __name__ == '__main__':
