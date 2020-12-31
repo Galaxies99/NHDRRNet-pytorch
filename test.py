@@ -6,21 +6,19 @@ from utils.loss import HDRLoss
 from utils.HDRutils import tonemap
 from utils.dataprocessor import dump_sample
 from dataset.HDR import KalantariTestDataset
-from models.DeepHDR import DeepHDR
+from models.NHDRRNet import NHDRRNet
 from utils.configs import Configs
 
 
 # Get configurations
 configs = Configs()
-# configs = Configs(data_path='/Users/galaxies/Documents/Benchmark/kalantari_dataset')
-
 
 # Load dataset
 test_dataset = KalantariTestDataset(configs=configs)
 test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
 
-# Build DeepHDR model from configs
-model = DeepHDR(configs)
+# Build NHDRRNet model from configs
+model = NHDRRNet()
 if configs.multigpu is False:
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     model.to(device)
@@ -29,7 +27,6 @@ else:
     if device == torch.device('cpu'):
         raise EnvironmentError('No GPUs, cannot initialize multigpu training.')
     model.to(device)
-    model = torch.nn.DataParallel(model)
 
 # Define optimizer
 optimizer = optim.Adam(model.parameters(), betas=(configs.beta1, configs.beta2), lr=configs.learning_rate)
@@ -47,6 +44,9 @@ if os.path.isfile(checkpoint_file):
     print("Load checkpoint %s (epoch %d)", checkpoint_file, start_epoch)
 else:
     raise ModuleNotFoundError('No checkpoint files.')
+
+if configs.multigpu is True:
+    model = torch.nn.DataParallel(model)
 
 
 def test_one_epoch():
