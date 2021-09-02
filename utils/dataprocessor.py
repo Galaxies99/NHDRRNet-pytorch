@@ -96,8 +96,8 @@ def get_input(LDR_path, exp_path, ref_HDR_path):
     ns = len(in_LDR_paths)
     tmp_img = cv2.imread(in_LDR_paths[0]).astype(np.float32)
     h, w, c = tmp_img.shape
-    h = h // 8 * 8
-    w = w // 8 * 8
+    h = h // 16 * 16
+    w = w // 16 * 16
 
     in_exps = np.array(open(exp_path).read().split('\n')[:ns]).astype(np.float32)
     in_LDRs = np.zeros((h, w, c * ns), dtype=np.float32)
